@@ -7,4 +7,3 @@ python-multipart
 pymongo
 python-dotenv
 dateparser
-spacy

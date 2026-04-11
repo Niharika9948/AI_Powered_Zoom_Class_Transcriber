@@ -7,10 +7,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pymongo import MongoClient
 import whisper
-import spacy
-from dateparser import parse as parse_date
+import dateparser
 
-# FastAPI setup
+# =========================
+# FASTAPI SETUP
+# =========================
 app = FastAPI()
 
 app.add_middleware(
@@ -20,31 +21,37 @@ app.add_middleware(
     allow_headers=["*"]
 )
 
-# MongoDB
+# =========================
+# MONGODB
+# =========================
 client = MongoClient(os.getenv("MONGO_URL"))
 db = client["echo_audit"]
 tasks_collection = db["tasks"]
 
-# Whisper model
-model = whisper.load_model("base")
+# =========================
+# MEMORY OPTIMIZED WHISPER
+# =========================
+model = whisper.load_model("tiny")  # ✅ LOW MEMORY MODEL
 
-# Folder
+# =========================
+# FOLDER
+# =========================
 os.makedirs("recordings", exist_ok=True)
 
-# SAFE spaCy loading (IMPORTANT)
-try:
-    nlp = spacy.load("en_core_web_sm")
-except:
-    nlp = spacy.blank("en")
-
+# =========================
+# LIGHTWEIGHT TASK KEYWORDS
+# =========================
 TASK_KEYWORDS = [
     "write", "read", "revise", "note", "notes",
-    "practice", "remember", "homework", "assignment",
-    "finish", "complete", "project"
+    "practice", "remember", "homework",
+    "assignment", "finish", "complete", "project"
 ]
 
 SENTENCE_REGEX = re.compile(r'[^.!?]+[.!?]?')
 
+# =========================
+# TASK EXTRACTION (NO SPACY → SAVES MEMORY)
+# =========================
 def extract_tasks(text):
     tasks = []
     sentences = [s.strip() for s in SENTENCE_REGEX.findall(text) if s.strip()]
@@ -56,20 +63,12 @@ def extract_tasks(text):
 
             deadline = None
 
-            # regex date
-            date_match = re.search(r'\b(by|before|on|due)\s+([\w\s\d/:]+)', sentence.lower())
+            # simple regex-based date detection
+            date_match = re.search(r'\b(by|before|on|due)\s+(.+)', sentence.lower())
             if date_match:
-                parsed = parse_date(date_match.group(2))
+                parsed = dateparser.parse(date_match.group(2))
                 if parsed:
                     deadline = parsed.strftime("%Y-%m-%d %H:%M")
-
-            # spaCy date detection
-            doc = nlp(sentence)
-            for ent in doc.ents:
-                if ent.label_ in ["DATE", "TIME"]:
-                    parsed = parse_date(ent.text)
-                    if parsed:
-                        deadline = parsed.strftime("%Y-%m-%d %H:%M")
 
             task_data = {
                 "task": sentence.strip(),
@@ -86,6 +85,9 @@ def extract_tasks(text):
     return tasks
 
 
+# =========================
+# AUDIO PROCESSING
+# =========================
 @app.post("/process")
 async def process_audio(file: UploadFile = File(...)):
 
@@ -117,6 +119,9 @@ async def process_audio(file: UploadFile = File(...)):
     }
 
 
+# =========================
+# TASK APIs
+# =========================
 @app.get("/tasks")
 def get_tasks():
     all_tasks = list(tasks_collection.find({}))
@@ -138,6 +143,9 @@ def complete_task(task: dict):
     return {"status": "done"}
 
 
+# =========================
+# DOWNLOAD FILE
+# =========================
 @app.get("/download/{filename}")
 def download_txt(filename: str):
     file_path = os.path.join("recordings", filename)
