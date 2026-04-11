@@ -2,10 +2,13 @@ import os
 import uuid
 import shutil
 import re
+import gc
+
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from pymongo import MongoClient
+
 import whisper
 import dateparser
 
@@ -29,17 +32,34 @@ db = client["echo_audit"]
 tasks_collection = db["tasks"]
 
 # =========================
-# MEMORY OPTIMIZED WHISPER
+# WHISPER (MEMORY SAFE LAZY LOADING)
 # =========================
-model = whisper.load_model("tiny")  # ✅ LOW MEMORY MODEL
+model = None
+
+def get_model():
+    global model
+    if model is None:
+        model = whisper.load_model("tiny", device="cpu")
+    return model
+
+
+def transcribe_audio(path):
+    m = get_model()
+    result = m.transcribe(path, fp16=False)
+
+    # free memory after use (important for Render)
+    del m
+    gc.collect()
+
+    return result
 
 # =========================
-# FOLDER
+# FOLDER SETUP
 # =========================
 os.makedirs("recordings", exist_ok=True)
 
 # =========================
-# LIGHTWEIGHT TASK KEYWORDS
+# TASK KEYWORDS
 # =========================
 TASK_KEYWORDS = [
     "write", "read", "revise", "note", "notes",
@@ -50,7 +70,7 @@ TASK_KEYWORDS = [
 SENTENCE_REGEX = re.compile(r'[^.!?]+[.!?]?')
 
 # =========================
-# TASK EXTRACTION (NO SPACY → SAVES MEMORY)
+# TASK EXTRACTION (NO SPA CY)
 # =========================
 def extract_tasks(text):
     tasks = []
@@ -63,7 +83,6 @@ def extract_tasks(text):
 
             deadline = None
 
-            # simple regex-based date detection
             date_match = re.search(r'\b(by|before|on|due)\s+(.+)', sentence.lower())
             if date_match:
                 parsed = dateparser.parse(date_match.group(2))
@@ -84,9 +103,8 @@ def extract_tasks(text):
 
     return tasks
 
-
 # =========================
-# AUDIO PROCESSING
+# AUDIO PROCESSING ENDPOINT
 # =========================
 @app.post("/process")
 async def process_audio(file: UploadFile = File(...)):
@@ -99,8 +117,10 @@ async def process_audio(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
 
     try:
-        result = model.transcribe(audio_path, fp16=False)
+        # MEMORY SAFE TRANSCRIPTION
+        result = transcribe_audio(audio_path)
         text = result["text"]
+
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
 
@@ -117,7 +137,6 @@ async def process_audio(file: UploadFile = File(...)):
         "tasks": tasks,
         "txt_file": txt_file
     }
-
 
 # =========================
 # TASK APIs
@@ -142,9 +161,8 @@ def complete_task(task: dict):
 
     return {"status": "done"}
 
-
 # =========================
-# DOWNLOAD FILE
+# DOWNLOAD TRANSCRIPT
 # =========================
 @app.get("/download/{filename}")
 def download_txt(filename: str):
