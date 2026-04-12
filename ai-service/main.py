@@ -2,6 +2,7 @@ import os
 import uuid
 import shutil
 import re
+import gc
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -51,25 +52,33 @@ TASK_KEYWORDS = [
 SENTENCE_REGEX = re.compile(r'[^.!?]+[.!?]?')
 
 # =========================
-# LOAD MODEL ONLY WHEN NEEDED (IMPORTANT FIX)
+# MODEL (IMPORTANT FIX)
 # =========================
 model = None
 
 def get_model():
     global model
     if model is None:
-        print("🧠 Loading Whisper model (first request)...")
-        model = whisper.load_model("tiny", device="cpu")
+        print("🧠 Loading Whisper model (tiny.en)...")
+        # IMPORTANT: lighter model for Render free tier
+        model = whisper.load_model("tiny.en", device="cpu")
         print("✅ Model loaded")
     return model
 
 # =========================
-# TRANSCRIBE
+# TRANSCRIPTION
 # =========================
 def transcribe_audio(path):
-    model = get_model()
-    result = model.transcribe(path, fp16=False)
-    return result
+    try:
+        result = get_model().transcribe(path, fp16=False)
+
+        # free memory after each request (VERY IMPORTANT)
+        gc.collect()
+
+        return result
+
+    except Exception as e:
+        return {"text": "", "error": str(e)}
 
 # =========================
 # TASK EXTRACTION
@@ -120,7 +129,9 @@ async def process_audio(file: UploadFile = File(...)):
 
     try:
         result = transcribe_audio(audio_path)
-        text = result["text"]
+
+        # handle safe error case
+        text = result.get("text", "")
 
     except Exception as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
@@ -171,8 +182,11 @@ def download_file(filename: str):
     return FileResponse(file_path, media_type="text/plain", filename=filename)
 
 # =========================
-# HEALTH
+# HEALTH CHECK
 # =========================
 @app.get("/")
 def home():
-    return {"status": "running"}
+    return {
+        "status": "running",
+        "message": "Whisper + Task API working"
+    }
