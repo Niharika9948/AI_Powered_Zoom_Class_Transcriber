@@ -2,6 +2,7 @@ import os
 import uuid
 import shutil
 import re
+import threading
 
 from fastapi import FastAPI, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +17,6 @@ import dateparser
 # =========================
 app = FastAPI()
 
-# ✅ FINAL CORS (secure + working)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[os.getenv("FRONTEND_URL", "*")],
@@ -32,22 +32,27 @@ db = client["echo_audit"]
 tasks_collection = db["tasks"]
 
 # =========================
-# WHISPER (LOAD ONCE ONLY)
+# WHISPER MODEL (FIXED)
 # =========================
 model = None
 
-def get_model():
+def load_model():
     global model
-    if model is None:
-        print("🧠 Loading Whisper model...")
-        model = whisper.load_model("tiny", device="cpu")
-        print("✅ Model loaded")
-    return model
+    print("🧠 Loading Whisper model at startup...")
+    model = whisper.load_model("tiny", device="cpu")
+    print("✅ Model loaded successfully")
 
+# ✅ LOAD MODEL ON STARTUP (IMPORTANT FIX)
+@app.on_event("startup")
+def startup_event():
+    threading.Thread(target=load_model).start()
 
 def transcribe_audio(path):
-    m = get_model()
-    result = m.transcribe(path, fp16=False)
+    global model
+    if model is None:
+        raise Exception("Model not loaded yet. Please wait and try again.")
+    
+    result = model.transcribe(path, fp16=False)
     return result
 
 # =========================
